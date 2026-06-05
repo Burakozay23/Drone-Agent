@@ -1,0 +1,3 @@
+mcp
+pymavlink
+ollama
