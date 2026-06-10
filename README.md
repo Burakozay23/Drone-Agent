@@ -136,13 +136,19 @@ Goto için önce telemetriden konum okuyun; örnek: hedef enlem/boylam + irtifa 
 | `mcp_server.py` | MCP araçları, pymavlink |
 | `requirements.txt` | Python bağımlılıkları |
 
-### MCP araçları
+### MCP Sunucu Kaynakları (Resources)
 
-- `get_telemetry` — konum, irtifa, hız, batarya, mod  
-- `arm_and_takeoff` — kalkış (`altitude`)  
-- `goto` — hedef GPS  
-- `land` — iniş  
-- `set_mode` — GUIDED, STABILIZE, LOITER, RTL, LAND  
+- `drone://uav-1/thing-description` — Ajanın okuduğu donanım ve yetenek JSON anayasası
+- `drone://uav-1/telemetry` — Ham JSON telemetri
+- `drone://uav-1/status` — İnsan okunabilir özet
+
+### MCP Araçları (Tools)
+
+- `get_telemetry` — Konum, irtifa, hız, batarya, mod
+- `arm_and_takeoff` — Kalkış (`altitude`)
+- `goto` — Hedef GPS koordinatına uçuş
+- `land` — İniş
+- `set_mode` — Mod değişimi (GUIDED, STABILIZE, LOITER, RTL, LAND)
 
 ---
 
