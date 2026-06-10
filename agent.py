@@ -1,65 +1,57 @@
-# agent.py
+"""
+Drone Autonomous Agent Module.
+
+This module establishes a bridge between a local LLM (Qwen) and the MCP server.
+The agent dynamically discovers its capabilities and hardware limits by reading
+the W3C Thing Description (TD) resource upon initialization.
+"""
+
 import asyncio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 import ollama
 
 MODEL = "qwen2.5:7b"
+MAX_HISTORY = 15
 
-SYSTEM_PROMPT = """Sen deneyimli bir drone operatörü asistanısın.
-Görevin, kullanıcının doğal dil komutlarını anlayarak
-uygun drone araçlarını çağırmak ve sonuçları Türkçe raporlamaktır.
 
-## Elindeki Araçlar
+def generate_system_prompt(td_content: str) -> str:
+    """
+    Generates a dynamic agent prompt by reading the device's Thing Description data.
 
-### get_telemetry()
-Drone'un anlık durumunu döndürür:
-- GPS koordinatları (enlem/boylam)
-- Zemine göre irtifa (metre)
-- Kuzey/doğu yönlü hız (m/s)
-- Batarya durumu (yüzde)
-- Mevcut uçuş modu
+    Args:
+        td_content (str): W3C Thing Description text in JSON format.
 
-### arm_and_takeoff(altitude: float)
-Drone'u arm eder ve belirtilen irtifaya kaldırır.
-- altitude: Hedef irtifa, metre cinsinden (örnek: 10.0)
-- Maksimum güvenlik sınırı: 50 metre
-- Kullanım: Kullanıcı "kalk", "havalandır", "kaldır" gibi komutlar verdiğinde
+    Returns:
+        str: A dynamic and unrestricted system prompt prepared for the LLM.
+    """
+    return f"""Sen otonom bir drone asistanısın.
 
-### goto(lat: float, lon: float, altitude: float)
-Drone'u belirtilen GPS koordinatına uçurur.
-- lat: Hedef enlem (örnek: -35.363262)
-- lon: Hedef boylam (örnek: 149.165237)
-- altitude: Uçuş irtifası, metre cinsinden
-- Maksimum güvenlik sınırı: 50 metre
+Bağlandığın cihazın özellikleri, donanımsal limitleri ve kullanabileceğin
+tüm eylemler aşağıdaki W3C Thing Description (TD) JSON verisinde tanımlanmıştır:
 
-### land()
-Drone'u bulunduğu konuma indirir.
-- Parametre gerekmez
-- Kullanım: Kullanıcı "in", "indir", "land" dediğinde
+{td_content}
 
-### set_mode(mode: str)
-Drone'un uçuş modunu değiştirir.
-- Geçerli modlar: GUIDED, STABILIZE, LOITER, RTL, LAND
-
-## Davranış Kuralları
-1. Konum veya durum sorularında ÖNCE get_telemetry() çağır, sonra yanıtla.
-2. Uçuş komutlarından önce mevcut durumu get_telemetry() ile kontrol et.
-3. Araç sonucunda HATA: ile başlayan mesaj görürsen kullanıcıya bildir, tahmin yapma.
-4. Koordinat verileri gerçek MAVLink verisinden gelir — asla uydurma.
-5. Tüm yanıtları Türkçe ver.
-6. Sayısal parametreleri daima float olarak gönder (örnek: 10.0).
-7. Sadece Türkçe yaz, başka dil karakteri kullanma."""
+YAKLAŞIM VE KURALLAR:
+- Kullanıcı hedeflerine ulaşmak için kullanacağın araçları (tools) ve izleyeceğin
+  stratejiyi belirlemekte tamamen özgürsün. Durumu analiz edip inisiyatif alabilirsin.
+- Eylemlerini planlarken her zaman TD içindeki donanım limitlerine (örn: maximum irtifa) uy.
+  Eğer kullanıcının komutu bu limitleri aşıyorsa, cihazın sınırlarını (TD referansıyla)
+  açıklayarak kullanıcıyı uyar ve komutu güvenli sınırlar içinde revize ederek uygula.
+- Durum farkındalığı yaratmak için elindeki telemetri ve durum araçlarını
+  gerektiği zaman otonom olarak kullan.
+- Yanıtlarını sadece Türkçe, anlaşılır, net ve profesyonel bir şekilde ver.
+"""
 
 
 async def run_agent():
     """
-    Drone agent ana döngüsü.
+    Main execution loop for the agent.
 
-    MCP sunucusuna bağlanır, araçları keşfeder ve
-    kullanıcı komutlarını Ollama LLM aracılığıyla işler.
+    Connects to the MCP server, fetches the hardware identity (TD), constructs
+    the system prompt, and translates natural language user commands into tool calls.
     """
-    print("DEBUG: Agent fonksiyonu başladı, sunucuya bağlanmaya çalışıyorum...")
+    print("DEBUG: Sunucuya bağlanılıyor ve cihaz keşfediliyor...")
 
     server_params = StdioServerParameters(
         command="python3",
@@ -70,6 +62,17 @@ async def run_agent():
         async with ClientSession(read, write) as session:
             await session.initialize()
 
+            # 1. Self-Discovery: Read the device's own definition (TD) from the server
+            try:
+                td_result = await session.read_resource("drone://uav-1/thing-description")
+                td_content = td_result.contents[0].text
+                system_prompt = generate_system_prompt(td_content)
+                print("[Keşif] Thing Description (TD) başarıyla okundu ve entegre edildi.")
+            except Exception as e:
+                print(f"[Keşif Hatası] TD okunamadı. Sunucu ayarlarını kontrol edin: {e}")
+                return
+
+            # 2. Fetch tools dynamically from the server
             tools_result = await session.list_tools()
             tools = [
                 {
@@ -83,8 +86,10 @@ async def run_agent():
                 for t in tools_result.tools
             ]
 
-            print(f"Drone Agent hazır! ({len(tools)} araç yüklendi) Çıkmak için 'quit' yaz.\n")
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            print(f"Drone Agent Hazır! ({len(tools)} araç yüklendi) Çıkmak için 'quit' yaz.\n")
+            
+            # 3. Initialize message history with the dynamic prompt
+            messages = [{"role": "system", "content": system_prompt}]
 
             while True:
                 user_input = input("Sen: ").strip()
@@ -95,7 +100,7 @@ async def run_agent():
 
                 messages.append({"role": "user", "content": user_input})
 
-                # Araç çağrısı döngüsü — LLM araç döndürmediği ana kadar çalışır
+                # Tool execution and evaluation inner loop
                 while True:
                     try:
                         response = ollama.chat(
@@ -104,22 +109,21 @@ async def run_agent():
                             tools=tools
                         )
                     except Exception as e:
-                        print(f"[Ollama hatası]: {e}")
-                        messages.pop()
+                        print(f"[Ollama Hatası]: {e}")
+                        messages.pop()  # Revert the faulty command
                         print("Agent: Bir hata oluştu, lütfen tekrar deneyin.\n")
                         break
 
-                    # Ollama object olarak döner, dict değil
                     msg = response.message
 
-                    # Tool çağrısı yok → kullanıcıya yanıt ver ve iç döngüden çık
+                    # If the agent didn't use a tool (or finished its task), print the response and break
                     if not msg.tool_calls:
                         answer = msg.content or ""
                         messages.append({"role": "assistant", "content": answer})
                         print(f"Agent: {answer}\n")
                         break
 
-                    # Tool çağrısı var → işle
+                    # If the agent called one or more tools, append them to the context
                     messages.append({
                         "role": "assistant",
                         "content": None,
@@ -130,31 +134,34 @@ async def run_agent():
                         tool_name = tc.function.name
                         tool_args = dict(tc.function.arguments) if tc.function.arguments else {}
 
-                        # get_telemetry parametresiz çalışır, LLM ne gönderirse temizle
+                        # Sanitize arguments against LLM hallucinations (String -> Float conversion)
                         if tool_name == "get_telemetry":
                             tool_args = {}
-
-                        # String gelen sayısal parametreleri float'a çevir
+                        
                         for key, val in tool_args.items():
                             try:
                                 tool_args[key] = float(val)
                             except (ValueError, TypeError):
                                 pass
 
-                        print(f"[Araç çağrısı: {tool_name}({tool_args})]")
+                        print(f"  [Araç Tetiklendi: {tool_name}({tool_args})]")
 
+                        # Execute the tool on the MCP server and retrieve the result
                         result = await session.call_tool(tool_name, tool_args)
                         tool_output = result.content[0].text if result.content else "Sonuç alınamadı."
 
-                        print(f"[Araç sonucu]: {tool_output}")
+                        print(f"  [Sensör/Sistem Yanıtı]: {tool_output}")
 
                         messages.append({
                             "role": "tool",
                             "name": tool_name,
                             "content": tool_output
                         })
-                    # İç döngü devam eder — LLM sonuçları değerlendirip
-                    # ya yeni tool çağırır ya da kullanıcıya yanıt verir
+                    
+                    # --- CONTEXT PROTECTION ---
+                    # Prune old messages to prevent context overflow while keeping the initial system prompt
+                    if len(messages) > MAX_HISTORY:
+                        messages = [messages[0]] + messages[-(MAX_HISTORY-1):]
 
 
 if __name__ == "__main__":
